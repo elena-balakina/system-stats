@@ -8,6 +8,7 @@ arguments print {"error": ...} and exit 1; a failed collector puts "error"
 inside its section while the tool still exits 0.
 """
 
+import ctypes
 import hashlib
 import json
 import os
@@ -18,7 +19,7 @@ import subprocess
 import sys
 import time
 
-SYSTEM = platform.system()  # "Darwin" | "Linux"
+SYSTEM = platform.system()  # "Darwin" | "Linux" | "Windows"
 DEFAULT_TOP_N = 5
 MAX_TOP_N = 100
 DEFAULT_BENCH_MB = 64
@@ -40,7 +41,39 @@ def _section(fn):
         return {"error": str(e)}
 
 
+def _windows_cpu_pct():
+    """Measure total CPU use over a short interval using GetSystemTimes."""
+
+    class FILETIME(ctypes.Structure):
+        _fields_ = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
+
+    def system_times():
+        idle, kernel, user = FILETIME(), FILETIME(), FILETIME()
+        if not ctypes.windll.kernel32.GetSystemTimes(
+            ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)
+        ):
+            raise ctypes.WinError()
+
+        def value(filetime):
+            return (filetime.dwHighDateTime << 32) | filetime.dwLowDateTime
+
+        return value(idle), value(kernel), value(user)
+
+    idle_start, kernel_start, user_start = system_times()
+    time.sleep(0.25)
+    idle_end, kernel_end, user_end = system_times()
+    total = (kernel_end - kernel_start) + (user_end - user_start)
+    if total <= 0:
+        raise RuntimeError("could not measure CPU usage")
+    return (1 - (idle_end - idle_start) / total) * 100
+
+
 def collect_load():
+    if SYSTEM == "Windows":
+        return {
+            "cpu_pct": round(_windows_cpu_pct(), 1),
+            "cpu_count": os.cpu_count(),
+        }
     l1, l5, l15 = os.getloadavg()
     return {
         "loadavg_1m": round(l1, 2),
@@ -81,18 +114,46 @@ def _mem_linux():
     }
 
 
+def _mem_windows():
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    status = MEMORYSTATUSEX()
+    status.dwLength = ctypes.sizeof(status)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        raise ctypes.WinError()
+    return {
+        "total_bytes": status.ullTotalPhys,
+        "used_bytes": status.ullTotalPhys - status.ullAvailPhys,
+        "available_bytes": status.ullAvailPhys,
+    }
+
+
 def collect_mem():
     if SYSTEM == "Darwin":
         return _mem_darwin()
     if SYSTEM == "Linux":
         return _mem_linux()
+    if SYSTEM == "Windows":
+        return _mem_windows()
     return {"error": f"unsupported platform: {SYSTEM}"}
 
 
 def collect_disk():
-    usage = shutil.disk_usage("/")
+    path = os.environ.get("SystemDrive", "C:") + "\\" if SYSTEM == "Windows" else "/"
+    usage = shutil.disk_usage(path)
     return {
-        "path": "/",
+        "path": path,
         "total_bytes": usage.total,
         "used_bytes": usage.used,
         "free_bytes": usage.free,
@@ -106,6 +167,8 @@ def _uptime_seconds():
         return time.time() - float(re.search(r"sec = (\d+)", out).group(1))
     if SYSTEM == "Linux":
         return float(open("/proc/uptime").read().split()[0])
+    if SYSTEM == "Windows":
+        return ctypes.windll.kernel32.GetTickCount64() / 1000
     raise ValueError(f"unsupported platform: {SYSTEM}")
 
 

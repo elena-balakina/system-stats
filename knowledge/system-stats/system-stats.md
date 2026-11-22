@@ -15,10 +15,12 @@ TOOL_ARGS='{"section":"load,mem,disk"}' python3 tools/system-stats/system-stats.
 
 ## Sections
 
-- `load` — load average (1/5/15 min) and CPU core count
-- `mem` — total / used / available RAM in bytes (macOS and Linux)
-- `disk` — `/` usage, including `used_pct`
-- `uptime` — system uptime
+- `load` — on macOS/Linux: load average (1/5/15 min) and CPU core count;
+  on Windows: total CPU utilization sampled over 250 ms (`cpu_pct`) and core count.
+- `mem` — total / used / available RAM in bytes (macOS, Linux, and Windows)
+- `disk` — `/` usage on macOS/Linux or the system drive on Windows, including
+  `used_pct`
+- `uptime` — system uptime (macOS, Linux, and Windows)
 - `top` — top processes by CPU (`top_n`)
 - `ports` — listening TCP ports
 - `bench` — SHA-256 throughput benchmark (`mb`)
@@ -38,6 +40,7 @@ TOOL_ARGS='{"section":"load,mem,disk"}' python3 tools/system-stats/system-stats.
 
 ## Interpretation
 
-- Compare `loadavg_5m` with `cpu_count`.
+- On macOS/Linux, compare `loadavg_5m` with `cpu_count`. On Windows,
+  `cpu_pct` is an instantaneous measurement rather than a load average.
 - Flag RAM when available is below ~10% of total; flag disk when
   `used_pct` is above 90%.
